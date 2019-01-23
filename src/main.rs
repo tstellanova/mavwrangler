@@ -7,19 +7,19 @@ use std::time::{SystemTime};
 use sensulator::Sensulator;
 
 
-const Pb: f64 = 101325.0;  // static pressure at sea level [Pa]
-const Tb: f64 = 288.15;    // standard temperature at sea level [K]
-const Lb: f64 = -0.0065;   // standard temperature lapse rate [K/m]
-const M : f64 = 0.0289644;  // molar mass of Earth's air [kg/mol]
-const G : f64 = 9.80665;    // gravity
-const R : f64 = 8.31432;    // universal gas constant
+const STD_PRESS: f64 = 101325.0;  // static pressure at sea level (Pa)
+const STD_TEMP: f64 = 288.15;    // standard temperature at sea level (K)
+const LAPSE_RATE: f64 = -0.0065;   // standard temp altitude lapse rate (K/m)
+const MOL_MASS : f64 = 0.0289644;  // molar mass of Earth's air (kg/mol)
+const ACCEL_G : f64 = 9.80665;    // gravity acceleration (m/s^2)
+const GAS_CONSTANT_R : f64 = 8.31432;    // universal gas constant, R
 
 
 fn altitude_to_baro_pressure(alt: f32) -> f32 {
   let big_alt: f64 = alt.into();
-  let base = Tb / (Tb + (Lb * big_alt));
-  let exp = (G * M) / (R * Lb);
-  let val: f64 = Pb * base.powf(exp);
+  let base = STD_TEMP / (STD_TEMP + (LAPSE_RATE * big_alt));
+  let exp = (ACCEL_G * MOL_MASS) / (GAS_CONSTANT_R * LAPSE_RATE);
+  let val: f64 = STD_PRESS * base.powf(exp);
   (val as f32)
 }
     
@@ -38,7 +38,6 @@ fn heartbeat_msg() -> mavlink::common::MavMessage {
 const HOME_LAT: f32 = 37.8;
 const HOME_LON: f32 = -122.2;
 const HOME_ALT: f32 = 5000.0;
-
 
 
 
@@ -116,63 +115,34 @@ fn hil_gps_msg(sys_micros: u64, lat: f32, lon: f32, alt: f32) -> mavlink::common
     })
 }
     
+    
+const ACCEL_ABS_ERR : f32 = 1e-2;
+const ACCEL_REL_ERR : f32 = 1e-4;
+
 fn main() {
   
   let boot_time = SystemTime::now();
   
-  let mut fake_gps_lat = Sensulator::new();
-  fake_gps_lat.set_absolute_error_range(1e-3);
-  fake_gps_lat.set_relative_error(1e-6);
-  fake_gps_lat.set_center_value(HOME_LAT);
-  
-  let mut fake_gps_lon = Sensulator::new();
-  fake_gps_lon.set_absolute_error_range(1e-3);
-  fake_gps_lon.set_relative_error(1e-6);
-  fake_gps_lon.set_center_value(HOME_LON);
-  
+  let mut fake_gps_lat = Sensulator::new(HOME_LAT, 1e-3, 1e-6);
+  let mut fake_gps_lon = Sensulator::new(HOME_LON, 1e-3, 1e-6);
   // this range appears to allow EKF fusion to begin
-  let mut fake_alt = Sensulator::new();
-  fake_alt.set_absolute_error_range(10.0);
-  fake_alt.set_relative_error(5.0);
-  fake_alt.set_center_value(HOME_ALT);
-  
-  let mut fake_xacc = Sensulator::new();
-  fake_xacc.set_absolute_error_range(1e-2);
-  fake_xacc.set_relative_error(1e-4);
-  fake_xacc.set_center_value(0.1);
-  
-  let mut fake_yacc = Sensulator::new();
-  fake_yacc.set_absolute_error_range(1e-2);
-  fake_yacc.set_relative_error(1e-4);
-  fake_yacc.set_center_value(0.1);
-  
-  let mut fake_zacc = Sensulator::new();
-  fake_zacc.set_absolute_error_range(1e-2);
-  fake_zacc.set_relative_error(1e-4);
-  fake_zacc.set_center_value(9.8);
-  
-  let mut wander = Sensulator::new();
-  wander.set_absolute_error_range(1e-1);
-  wander.set_relative_error(1e-3);
-  wander.set_center_value(0.01);
-  
+  let mut fake_alt = Sensulator::new(HOME_ALT, 10.0, 5.0);
 
-  
-    // let args: Vec<_> = env::args().collect();
-    //
-    // if args.len() < 2 {
-    //     println!("Usage: mavlink-dump (tcp|udpin|udpout):ip:port");
-    //     // return;
-    // }
-    // else {
-    //   selector = &args[1];
-    // }
+  let mut fake_xacc = Sensulator::new(0.001, ACCEL_ABS_ERR, ACCEL_REL_ERR);
+  let mut fake_yacc = Sensulator::new(0.001, ACCEL_ABS_ERR, ACCEL_REL_ERR);
 
-    let selector = "tcp:rock64-03.local:4560";
-    let vehicle = Arc::new(mavlink::connect(&selector).unwrap());
-    
-    vehicle.send(&mavlink::request_parameters()).unwrap();
-    vehicle.send(&mavlink::request_stream()).unwrap();
+  //assume z is down
+  let mut fake_zacc = Sensulator::new(9.8, ACCEL_ABS_ERR, ACCEL_REL_ERR);
+
+  //a wandering random sensor
+  let mut wander = Sensulator::new(0.01, 1e-1, 1e-3);
+
+
+  let selector = "tcp:rock64-03.local:4560";
+  let vehicle = Arc::new(mavlink::connect(&selector).unwrap());
+  
+  vehicle.send(&mavlink::request_parameters()).unwrap();
+  vehicle.send(&mavlink::request_stream()).unwrap();
 
     thread::spawn({
         let vehicle = vehicle.clone();
@@ -211,10 +181,13 @@ fn main() {
     });
 
     loop {
-        if let Ok(msg) = vehicle.recv() {
-            println!("{:?}", msg);
-        } else {
-            break;
-        }
+      println!("waiting...");
+      if let Ok(msg) = vehicle.recv() {
+          println!("{:?}", msg);
+      } 
+      else {
+        println!("bogus msg");
+          break;
+      }
     }
 }

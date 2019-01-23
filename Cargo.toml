@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 mavlink = "0.4"
-sensulator= "0.1"
+sensulator= "0.2"
 
 
 
