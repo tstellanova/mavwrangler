@@ -24,33 +24,41 @@ fn altitude_to_baro_pressure(alt: f32) -> f32 {
 }
     
 
-fn heartbeat_msg() -> mavlink::common::MavMessage {
-    mavlink::common::MavMessage::HEARTBEAT(mavlink::common::HEARTBEAT_DATA {
-        custom_mode: 0,
-        mavtype: 6,
-        autopilot: 8,
-        base_mode: 0,
-        system_status: 0,
-        mavlink_version: 3,
-    })
-}
+
 
 const HOME_LAT: f32 = 37.8;
 const HOME_LON: f32 = -122.2;
 const HOME_ALT: f32 = 5000.0;
 
 
+/// Create a message requesting the parameters list
+fn request_parameters() -> mavlink::common::MavMessage {
+    mavlink::common::MavMessage::PARAM_REQUEST_LIST(mavlink::common::PARAM_REQUEST_LIST_DATA {
+        target_system: 0,
+        target_component: 0,
+    })
+}
 
+/// Create a message enabling data streaming
+fn request_stream() -> mavlink::common::MavMessage {
+    mavlink::common::MavMessage::REQUEST_DATA_STREAM(mavlink::common::REQUEST_DATA_STREAM_DATA {
+        target_system: 0,
+        target_component: 0,
+        req_stream_id: 0,
+        req_message_rate: 10,
+        start_stop: 1,
+    })
+}
 
 fn hil_state_quaternion_msg(sys_micros: u64,  
   lat: f32, 
   lon: f32,
   alt: f32,
-  quat: Vec<f32>,
+  quat: [f32; 4],
 ) -> mavlink::common::MavMessage {
   mavlink::common::MavMessage::HIL_STATE_QUATERNION(mavlink::common::HIL_STATE_QUATERNION_DATA {
     time_usec: sys_micros,
-    attitude_quaternion: quat, //vec![0.0, 0.0, 0.0, 0.0], //Vec<f32> /* 4 */,
+    attitude_quaternion: quat, 
     rollspeed: 0.0,
     pitchspeed: 0.0,
     yawspeed: 0.0,
@@ -141,8 +149,8 @@ fn main() {
   let selector = "tcp:rock64-03.local:4560";
   let vehicle = Arc::new(mavlink::connect(&selector).unwrap());
   
-  vehicle.send(&mavlink::request_parameters()).unwrap();
-  vehicle.send(&mavlink::request_stream()).unwrap();
+  vehicle.send_default( &request_parameters()).unwrap();
+  vehicle.send_default( &request_stream()).unwrap();
 
     thread::spawn({
         let vehicle = vehicle.clone();
@@ -153,9 +161,7 @@ fn main() {
               let sys_micros: u64 = (elapsed.as_secs() * 1000000) + (elapsed.subsec_micros() as u64);
               let common_alt: f32 = fake_alt.read();
               
-              // vehicle.send(&mavlink::heartbeat_message()).ok();
-              // vehicle.send(&heartbeat_msg()).ok();
-              vehicle.send(&hil_sensor_msg(sys_micros+2,
+              vehicle.send_default(&hil_sensor_msg(sys_micros+2,
                 fake_xacc.read(),
                 fake_yacc.read(),
                 fake_zacc.read(),
@@ -163,7 +169,7 @@ fn main() {
                 wander.read()
                 )).ok();
                 
-              vehicle.send(&hil_gps_msg(sys_micros+4,
+              vehicle.send_default(&hil_gps_msg(sys_micros+4,
                 fake_gps_lat.read(),
                 fake_gps_lon.read(),
                 common_alt,
@@ -191,3 +197,7 @@ fn main() {
       }
     }
 }
+
+
+
+

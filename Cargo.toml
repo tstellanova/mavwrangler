@@ -5,11 +5,12 @@ authors = ["Todd Stellanova <tstellanova@users.noreply.github.com>"]
 edition = "2018"
 
 [dependencies]
-mavlink = "0.4"
+#mavlink = "0.4"
 sensulator= "0.2"
 
 
-
+[dependencies.mavlink]
+path = "../rust-mavlink"
 
 [patch.crates-io]
 sensulator = { git = "https://github.com/tstellanova/sensulator.git"  }
