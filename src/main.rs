@@ -3,7 +3,7 @@
 extern crate mavlink;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{SystemTime};
 
 use sensulator::Sensulator;
 
@@ -53,6 +53,19 @@ pub fn request_stream() -> mavlink::common::MavMessage {
   })
 }
 
+/// Create a heartbeat message
+pub fn heartbeat_msg() -> mavlink::common::MavMessage {
+    mavlink::common::MavMessage::HEARTBEAT(mavlink::common::HEARTBEAT_DATA {
+        custom_mode: 0,
+        mavtype: mavlink::common::MavType::MAV_TYPE_QUADROTOR,
+        autopilot: mavlink::common::MavAutopilot::MAV_AUTOPILOT_PX4,
+        base_mode: mavlink::common::MavModeFlag::empty(),
+        system_status: mavlink::common::MavState::MAV_STATE_STANDBY,
+        mavlink_version: 0x3,
+    })
+}
+
+/// Create a HIL_STATE_QUATERNION message
 pub fn hil_state_quaternion_msg(sys_micros: u64,  
   lat: f32, 
   lon: f32,
@@ -71,8 +84,8 @@ pub fn hil_state_quaternion_msg(sys_micros: u64,
     vx: 0,
     vy: 0,
     vz: 0,
-     ind_airspeed: 0,
-     true_airspeed: 0,
+    ind_airspeed: 0,
+    true_airspeed: 0,
     xacc: 0,
     yacc: 0,
     zacc: 0,
@@ -130,6 +143,25 @@ pub fn hil_gps_msg(sys_micros: u64, lat: f32, lon: f32, alt: f32
 }
     
     
+/*
+
+w	x	y	z	Description
+1	0	0	0	Identity quaternion, no rotation
+0	1	0	0	180° turn around X axis
+0	0	1	0	180° turn around Y axis
+0	0	0	1	180° turn around Z axis
+sqrt(0.5)	sqrt(0.5)	0	0	90° rotation around X axis
+sqrt(0.5)	0	sqrt(0.5)	0	90° rotation around Y axis
+sqrt(0.5)	0	0	sqrt(0.5)	90° rotation around Z axis
+sqrt(0.5)	-sqrt(0.5)	0	0	-90° rotation around X axis
+sqrt(0.5)	0	-sqrt(0.5)	0	-90° rotation around Y axis
+sqrt(0.5)	0	0	-sqrt(0.5)	-90° rotation around Z axis
+
+*/
+pub fn generate_attitude_quat() -> [f32; 4] {
+  [0.0, 1.0, 0.0, 0.0]
+}
+
 fn calc_elapsed_micros(base_time: &SystemTime) -> u64 {  
   let elapsed = base_time.elapsed().unwrap();
   let elapsed_micros = (elapsed.as_secs() * 1000000) + (elapsed.subsec_micros() as u64);
@@ -160,44 +192,60 @@ fn main() {
 
 
   let selector = "tcp:rock64-03.local:4560";
-  let vehicle = Arc::new(mavlink::connect(&selector).unwrap());
+  let vehicle = Arc::new(mavlink::connect(&selector).expect("Couldn't create new vehicle connection"));
   
-  vehicle.send_default( &request_parameters()).unwrap();
-  vehicle.send_default( &request_stream()).unwrap();
+  thread::spawn({
+      let vehicle = vehicle.clone();
+      
+      move || {
+        let hdr = mavlink::MavHeader::get_default_header();
+      
+        // vehicle.send(&hdr, &heartbeat_msg()).ok();
+        //TODO this doesn't seem to cause px4_sitl to send anything
+        // vehicle.send(&hdr, &request_parameters()).unwrap();
+        //TODO this doesn't seem to cause px4_sitl to send anything
+        // vehicle.send(&hdr, &request_stream()).unwrap();
+        
 
-  let mut sys_micros: u64 = 0;
-  
-    thread::spawn({
-        let vehicle = vehicle.clone();
-        move || {
-            loop {
-              sys_micros = calc_elapsed_micros(&boot_time);
-              let common_alt: f32 = fake_alt.read();
-              
-              for _x in 0..10 {
+          
+        loop {
+            let mut sys_micros = calc_elapsed_micros(&boot_time);
+            let common_alt: f32 = fake_alt.read();
+            
+            for _medium_rate in 0..2 {
+              for _fast_rate in 0..10 {
                 // this message is required to be sent at high speed since it simulates the IMU
-                vehicle.send_default(&hil_sensor_msg(sys_micros,
+                vehicle.send(&hdr, &hil_sensor_msg(sys_micros,
                   fake_xacc.read(),
                   fake_yacc.read(),
                   fake_zacc.read(),
                   common_alt,
                   wander.read()
                   )).ok();
-                  
+                
                   sys_micros = calc_elapsed_micros(&boot_time);
               }
-                
-              vehicle.send_default(&hil_gps_msg(sys_micros,
+              
+              vehicle.send(&hdr, &hil_gps_msg(sys_micros,
                 fake_gps_lat.read(),
                 fake_gps_lon.read(),
                 common_alt,
                 )).ok();
-                
-                thread::yield_now();
             }
+            
+            //px4_sitl sends an early request for this msg
+            vehicle.send(&hdr,&hil_state_quaternion_msg(sys_micros,  
+              fake_gps_lat.read(), 
+              fake_gps_lon.read(),
+              fake_alt.read(),
+              generate_attitude_quat())).ok();
+              
+            thread::yield_now();
+          }
         }
-    });
+  });
 
+    // receiving loop continues in this thread
     loop {
       if let Ok((_header,msg)) = vehicle.recv() {
         match msg.message_id() {
