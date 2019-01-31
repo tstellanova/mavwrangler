@@ -34,6 +34,21 @@ const HOME_LON: f32 = -122.2;
 const HOME_ALT: f32 = 500.0;
 
 
+/*
+px4_sitl supports a limited subset of mavlink messages:
+MAVLINK_MSG_ID_HIL_SENSOR
+MAVLINK_MSG_ID_HIL_GPS
+
+MAVLINK_MSG_ID_RC_CHANNELS
+MAVLINK_MSG_ID_DISTANCE_SENSOR
+MAVLINK_MSG_ID_LANDING_TARGET
+MAVLINK_MSG_ID_HIL_STATE_QUATERNION
+
+MAVLINK_MSG_ID_HIL_OPTICAL_FLOW
+MAVLINK_MSG_ID_ODOMETRY
+MAVLINK_MSG_ID_VISION_POSITION_ESTIMATE:
+
+*/
 /// Create a message requesting the parameters list
 pub fn request_parameters() -> mavlink::common::MavMessage {
   mavlink::common::MavMessage::PARAM_REQUEST_LIST(mavlink::common::PARAM_REQUEST_LIST_DATA {
@@ -65,6 +80,36 @@ pub fn heartbeat_msg() -> mavlink::common::MavMessage {
     })
 }
 
+
+pub fn rc_channels_msg(sys_micros: u64,
+) -> mavlink::common::MavMessage {
+
+    let time_ms = (sys_micros / 1000) as u32;
+    mavlink::common::MavMessage::RC_CHANNELS(mavlink::common::RC_CHANNELS_DATA {
+        time_boot_ms: time_ms,
+        chan1_raw: 128,
+        chan2_raw: 128,
+        chan3_raw: 128,
+        chan4_raw: 128,
+        chan5_raw: 128,
+        chan6_raw: 128,
+        chan7_raw: 128,
+        chan8_raw: 128,
+        chan9_raw: 128,
+        chan10_raw: 128,
+        chan11_raw: 128,
+        chan12_raw: 128,
+        chan13_raw: 128,
+        chan14_raw: 128,
+        chan15_raw: 128,
+        chan16_raw: 128,
+        chan17_raw: 128,
+        chan18_raw: 128,
+        chancount: 8,
+        rssi: 100, //Receive signal strength indicator. Values: [0-100], 255: invalid/unknown.
+        })
+}
+
 /// Create a HIL_STATE_QUATERNION message
 pub fn hil_state_quaternion_msg(sys_micros: u64,  
   lat: f32, 
@@ -94,26 +139,25 @@ pub fn hil_state_quaternion_msg(sys_micros: u64,
 }
 
 
-pub fn hil_sensor_msg(sys_micros: u64, 
-  xacc: f32,
-  yacc: f32,
-  zacc: f32,
-  alt: f32,
-  wander: f32
+pub fn hil_sensor_msg(sys_micros: u64, state: &mut VehicleState
 ) -> mavlink::common::MavMessage {
   // We need to align our fake abs_pressure with the fake GPS altitude,
-  // or else the sensor fusion algos in autopilot will never align. 
-  mavlink::common::MavMessage::HIL_SENSOR(mavlink::common::HIL_SENSOR_DATA {
+  // or else the sensor fusion algos in autopilot will never align.
+
+    let alt = state.alt.read();
+    let wander = state.wander.read();
+
+    mavlink::common::MavMessage::HIL_SENSOR(mavlink::common::HIL_SENSOR_DATA {
      time_usec: sys_micros , 
-     xacc: xacc,
-     yacc: yacc,
-     zacc: zacc,
-     xgyro: wander,
-     ygyro: wander,
-     zgyro: wander,
-     xmag: wander,
-     ymag: wander,
-     zmag: wander,
+     xacc: state.xacc.read(),
+     yacc: state.yacc.read(),
+     zacc: state.zacc.read(),
+     xgyro: state.xgyro.read(),
+     ygyro: state.ygyro.read(),
+     zgyro: state.zgyro.read(),
+     xmag: state.xmag.read(),
+     ymag: state.ymag.read(),
+     zmag: state.zmag.read(),
      abs_pressure: altitude_to_baro_pressure(alt),
      diff_pressure: 0.1 + wander,
      pressure_alt: alt,
@@ -158,7 +202,7 @@ sqrt(0.5)	0	-sqrt(0.5)	0	-90° rotation around Y axis
 sqrt(0.5)	0	0	-sqrt(0.5)	-90° rotation around Z axis
 
 */
-pub fn generate_attitude_quat() -> [f32; 4] {
+pub fn generate_attitude_quat(_state: &VehicleState) -> [f32; 4] {
   [0.0, 1.0, 0.0, 0.0]
 }
 
@@ -172,82 +216,142 @@ fn calc_elapsed_micros(base_time: &SystemTime) -> u64 {
 const ACCEL_ABS_ERR : f32 = 1e-2;
 const ACCEL_REL_ERR : f32 = 1e-4;
 
+const GYRO_ABS_ERR : f32 = 1e-2;
+const GYRO_REL_ERR : f32 = 1e-4;
+
+const MAG_ABS_ERR : f32 = 1e-2;
+const MAG_REL_ERR : f32 = 1e-4;
+
+pub struct PhysicalVehicleState {
+    local_x: f32,
+    local_y: f32,
+    local_z: f32,
+
+    global_lat: f64,
+    global_lon: f64,
+    alt_msl: f32,
+
+    vx: f32,
+    vy: f32,
+    vz: f32,
+    quaternion: [f32; 4],
+}
+
+pub struct VehicleState {
+    boot_time: SystemTime,
+
+    lat: Sensulator,
+    lon: Sensulator,
+    alt: Sensulator,
+
+    xgyro: Sensulator,
+    ygyro: Sensulator,
+    zgyro: Sensulator,
+
+    xacc: Sensulator,
+    yacc: Sensulator,
+    zacc: Sensulator,
+
+    xmag: Sensulator,
+    ymag: Sensulator,
+    zmag: Sensulator,
+
+    wander: Sensulator,
+
+
+}
+
+//fn binary<T: Trait>(x: T, y: T) -> T
+
+type VehicleConnectionRef = std::boxed::Box<dyn mavlink::MavConnection + std::marker::Send + std::marker::Sync>;
+
+
+fn simulate_sensors_update(connection: &VehicleConnectionRef,
+                           state: &mut VehicleState,
+) {
+    let mut sys_micros = calc_elapsed_micros(&state.boot_time);
+    // altitude needs to change in lockstep in order for sensor fusion to align
+    let common_alt: f32 = state.alt.read();
+
+    for _medium_rate in 0..2 {
+        for _fast_rate in 0..10 {
+            // this message is required to be sent at high speed since it simulates the IMU
+            connection.send_default( &hil_sensor_msg(sys_micros, state)).ok();
+
+            sys_micros = calc_elapsed_micros(&state.boot_time);
+        }
+
+        connection.send_default( &hil_gps_msg(sys_micros,
+                                        state.lat.read(),
+                                        state.lon.read(),
+                                        common_alt,
+        )).ok();
+
+//        connection.send_default(&rc_channels_msg(sys_micros,
+//        )).ok();
+    }
+
+    //px4_sitl sends an early request for this msg
+    connection.send_default(&hil_state_quaternion_msg(sys_micros,
+                                                state.lat.read(),
+                                                state.lon.read(),
+                                                state.alt.read(),
+                                                generate_attitude_quat(&state))).ok();
+
+
+}
 fn main() {
-  
-  let boot_time = SystemTime::now();
-  
-  let mut fake_gps_lat = Sensulator::new(HOME_LAT, 1e-3, 1e-6);
-  let mut fake_gps_lon = Sensulator::new(HOME_LON, 1e-3, 1e-6);
-  // this range appears to allow EKF fusion to begin
-  let mut fake_alt = Sensulator::new(HOME_ALT, 10.0, 5.0);
 
-  let mut fake_xacc = Sensulator::new(0.001, ACCEL_ABS_ERR, ACCEL_REL_ERR);
-  let mut fake_yacc = Sensulator::new(0.001, ACCEL_ABS_ERR, ACCEL_REL_ERR);
+    let mut vehicle_state = VehicleState {
+        boot_time: SystemTime::now(),
 
-  //assume z is down
-  let mut fake_zacc = Sensulator::new(9.8, ACCEL_ABS_ERR, ACCEL_REL_ERR);
+        lat: Sensulator::new(HOME_LAT, 1e-3, 1e-6),
+        lon: Sensulator::new(HOME_LON, 1e-3, 1e-6),
+        // this range appears to allow EKF fusion to begin
+        alt: Sensulator::new(HOME_ALT, 10.0, 5.0),
 
-  //a wandering random sensor
-  let mut wander = Sensulator::new(0.01, 1e-1, 1e-3);
+        xgyro: Sensulator::new(0.001, GYRO_ABS_ERR, GYRO_REL_ERR),
+        ygyro: Sensulator::new(0.001, GYRO_ABS_ERR, GYRO_REL_ERR),
+        zgyro: Sensulator::new(0.001, GYRO_ABS_ERR, GYRO_REL_ERR),
+
+        xacc:  Sensulator::new(0.001, ACCEL_ABS_ERR, ACCEL_REL_ERR),
+        yacc:  Sensulator::new(0.001, ACCEL_ABS_ERR, ACCEL_REL_ERR),
+        zacc:  Sensulator::new(9.8, ACCEL_ABS_ERR, ACCEL_REL_ERR),
+
+        xmag: Sensulator::new(0.001, MAG_ABS_ERR, MAG_REL_ERR),
+        ymag: Sensulator::new(0.001, MAG_ABS_ERR, MAG_REL_ERR),
+        zmag: Sensulator::new(0.001, MAG_ABS_ERR, MAG_REL_ERR),
+
+        wander: Sensulator::new(0.01, 1e-1, 1e-3),
+    };
 
 
-  let selector = "tcp:rock64-03.local:4560";
-  let vehicle = Arc::new(mavlink::connect(&selector).expect("Couldn't create new vehicle connection"));
+
+  let selector = "tcpout:rock64-03.local:4560";
+  let connection = Arc::new(mavlink::connect(&selector).expect("Couldn't create new vehicle connection"));
   
   thread::spawn({
-      let vehicle = vehicle.clone();
-      
-      move || {
-        let hdr = mavlink::MavHeader::get_default_header();
-      
-        // vehicle.send(&hdr, &heartbeat_msg()).ok();
-        //TODO this doesn't seem to cause px4_sitl to send anything
-        // vehicle.send(&hdr, &request_parameters()).unwrap();
-        //TODO this doesn't seem to cause px4_sitl to send anything
-        // vehicle.send(&hdr, &request_stream()).unwrap();
-        
+      let connection = connection.clone();
 
-          
-        loop {
-            let mut sys_micros = calc_elapsed_micros(&boot_time);
-            let common_alt: f32 = fake_alt.read();
-            
-            for _medium_rate in 0..2 {
-              for _fast_rate in 0..10 {
-                // this message is required to be sent at high speed since it simulates the IMU
-                vehicle.send(&hdr, &hil_sensor_msg(sys_micros,
-                  fake_xacc.read(),
-                  fake_yacc.read(),
-                  fake_zacc.read(),
-                  common_alt,
-                  wander.read()
-                  )).ok();
-                
-                  sys_micros = calc_elapsed_micros(&boot_time);
-              }
-              
-              vehicle.send(&hdr, &hil_gps_msg(sys_micros,
-                fake_gps_lat.read(),
-                fake_gps_lon.read(),
-                common_alt,
-                )).ok();
-            }
-            
-            //px4_sitl sends an early request for this msg
-            vehicle.send(&hdr,&hil_state_quaternion_msg(sys_micros,  
-              fake_gps_lat.read(), 
-              fake_gps_lon.read(),
-              fake_alt.read(),
-              generate_attitude_quat())).ok();
-              
-            thread::yield_now();
+      move || {
+          loop {
+              //std::sync::Arc<std::boxed::Box<dyn mavlink::MavConnection + std::marker::Send + std::marker::Sync>>
+              simulate_sensors_update(  &*connection,  &mut vehicle_state);
+
+//              if let Ok(conn) = connection.downcast::<mavlink::MavConnection>() {
+//                  simulate_sensors_update(
+//                      &conn,
+//                  &vehicle_state,
+//                  );
+//              }
+              thread::yield_now();
           }
-        }
+      }
   });
 
     // receiving loop continues in this thread
     loop {
-      if let Ok((_header,msg)) = vehicle.recv() {
+      if let Ok((_header,msg)) = connection.recv() {
         match msg.message_id() {
           //TODO use constants instead
           93 => continue, //HIL_ACTUATOR_CONTROLS
