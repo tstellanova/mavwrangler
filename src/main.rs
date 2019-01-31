@@ -28,10 +28,6 @@ fn altitude_to_baro_pressure(alt: f32) -> f32 {
     
 
 
-/// Fake home coordinates
-const HOME_LAT: f32 = 37.8;
-const HOME_LON: f32 = -122.2;
-const HOME_ALT: f32 = 500.0;
 
 
 /*
@@ -111,29 +107,26 @@ pub fn rc_channels_msg(sys_micros: u64,
 }
 
 /// Create a HIL_STATE_QUATERNION message
-pub fn hil_state_quaternion_msg(sys_micros: u64,  
-  lat: f32, 
-  lon: f32,
-  alt: f32,
-  quat: [f32; 4],
+pub fn hil_state_quaternion_msg(sys_micros: u64,  state: &mut VehicleState
 ) -> mavlink::common::MavMessage {
   mavlink::common::MavMessage::HIL_STATE_QUATERNION(mavlink::common::HIL_STATE_QUATERNION_DATA {
     time_usec: sys_micros,
-    attitude_quaternion: quat, 
-    rollspeed: 0.0,
-    pitchspeed: 0.0,
-    yawspeed: 0.0,
-    lat: (lat * 1E7) as i32,
-    lon: (lon * 1E7) as i32,
-    alt: (alt * 1E3) as i32,
-    vx: 0,
-    vy: 0,
-    vz: 0,
+    attitude_quaternion: state.phyiscal_state.att_quat,
+    rollspeed: state.phyiscal_state.rollspeed,
+    pitchspeed: state.phyiscal_state.pitchspeed,
+    yawspeed: state.phyiscal_state.yawspeed,
+    lat: ( state.phyiscal_state.global_lat * 1E7) as i32,
+    lon: (state.phyiscal_state.global_lon * 1E7) as i32,
+    alt: (state.phyiscal_state.alt_wgs84 * 1E3) as i32,
+    vx: (state.phyiscal_state.body_vx * 1E2) as i16,
+    vy: (state.phyiscal_state.body_vy * 1E2) as i16,
+    vz: (state.phyiscal_state.body_vz * 1E2) as i16,
     ind_airspeed: 0,
-    true_airspeed: 0,
-    xacc: 0,
-    yacc: 0,
-    zacc: 0,
+    true_airspeed: (state.airspeed.read() * 1E2) as u16,
+      //TOOD convert these
+    xacc: state.phyiscal_state.body_ax as i16,
+    yacc: state.phyiscal_state.body_ay as i16,
+    zacc: state.phyiscal_state.body_az as i16,
   })
 
 }
@@ -167,13 +160,13 @@ pub fn hil_sensor_msg(sys_micros: u64, state: &mut VehicleState
   })
 }
 
-pub fn hil_gps_msg(sys_micros: u64, lat: f32, lon: f32, alt: f32
+pub fn hil_gps_msg(sys_micros: u64, state: &mut VehicleState
 ) -> mavlink::common::MavMessage {
   mavlink::common::MavMessage::HIL_GPS(mavlink::common::HIL_GPS_DATA {
    time_usec: sys_micros,
-   lat: (lat * 1E7) as i32,
-   lon: (lon * 1E7) as i32,
-   alt: (alt * 1E3) as i32,
+   lat: (state.lat.read() * 1E7) as i32,
+   lon: (state.lon.read() * 1E7) as i32,
+   alt: (state.alt.read() * 1E3) as i32,
    eph: 1,
    epv: 1,
    vel: 0,
@@ -186,7 +179,8 @@ pub fn hil_gps_msg(sys_micros: u64, lat: f32, lon: f32, alt: f32
   })
 }
     
-    
+
+//TODO track attitude quaternion:
 /*
 
 w	x	y	z	Description
@@ -202,9 +196,7 @@ sqrt(0.5)	0	-sqrt(0.5)	0	-90° rotation around Y axis
 sqrt(0.5)	0	0	-sqrt(0.5)	-90° rotation around Z axis
 
 */
-pub fn generate_attitude_quat(_state: &VehicleState) -> [f32; 4] {
-  [0.0, 1.0, 0.0, 0.0]
-}
+
 
 fn calc_elapsed_micros(base_time: &SystemTime) -> u64 {  
   let elapsed = base_time.elapsed().unwrap();
@@ -222,47 +214,130 @@ const GYRO_REL_ERR : f32 = 1e-4;
 const MAG_ABS_ERR : f32 = 1e-2;
 const MAG_REL_ERR : f32 = 1e-4;
 
+
+type Meters = f32;
+type MetersPerSecond = f32;
+type MetersPerSecondPerSecond = f32;
+type RadiansPerSecond = f32;
+type RadiansPerSecondPerSecond = f32;
+
+type WGS84Degrees = f64;
+
+/// Fake home coordinates
+const HOME_LAT: WGS84Degrees = 37.8;
+const HOME_LON: WGS84Degrees = -122.2;
+const HOME_ALT: Meters = 500.0;
+
+
+
 pub struct PhysicalVehicleState {
-    local_x: f32,
-    local_y: f32,
-    local_z: f32,
+    /// --- Position -----
+    local_x: Meters,
+    local_y: Meters,
+    local_z: Meters,
 
-    global_lat: f64,
-    global_lon: f64,
-    alt_msl: f32,
+    global_lat: WGS84Degrees,
+    global_lon: WGS84Degrees,
+    alt_wgs84: Meters,
 
-    vx: f32,
-    vy: f32,
-    vz: f32,
-    quaternion: [f32; 4],
+    /// Velocities in body frame
+    body_vx: MetersPerSecond,
+    body_vy: MetersPerSecond,
+    body_vz: MetersPerSecond,
+
+    /// Acceleration in body frame
+    body_ax: MetersPerSecondPerSecond,
+    body_ay: MetersPerSecondPerSecond,
+    body_az: MetersPerSecondPerSecond,
+
+    /// ---- Attitude --------
+    /// W, X, Y, Z attitude quaternion
+    att_quat: [f32; 4],
+    /// Roll angular speed in rad/s
+    rollspeed: RadiansPerSecond,
+    /// Pitch angular speed in rad/s
+    pitchspeed: RadiansPerSecond,
+    /// Yaw angular speed in rad/s
+    yawspeed: RadiansPerSecond,
+
+    roll_accel: RadiansPerSecondPerSecond,
+    pitch_accel: RadiansPerSecondPerSecond,
+    yaw_accel: RadiansPerSecondPerSecond,
+
+}
+
+impl PhysicalVehicleState{
+    fn new() -> PhysicalVehicleState {
+        PhysicalVehicleState {
+            local_x: 0.0,
+            local_y: 0.0,
+            local_z: 0.0,
+
+            global_lat: HOME_LAT,
+            global_lon: HOME_LON,
+            alt_wgs84: HOME_ALT,
+
+            /// Velocities in body frame
+            body_vx: 0.0,
+            body_vy: 0.0,
+            body_vz: 0.0,
+
+            /// Acceleration in body frame
+            body_ax: 0.0,
+            body_ay: 0.0,
+            body_az: 0.0,
+
+            /// ---- Attitude --------
+            /// W, X, Y, Z attitude quaternion
+            att_quat: [0.0, 0.0, 0.0, 0.0],
+            /// Roll angular speed in rad/s
+            rollspeed: 0.0,
+            /// Pitch angular speed in rad/s
+            pitchspeed: 0.0,
+            /// Yaw angular speed in rad/s
+            yawspeed: 0.0,
+
+            roll_accel: 0.0,
+            pitch_accel: 0.0,
+            yaw_accel: 0.0,
+        }
+    }
 }
 
 pub struct VehicleState {
     boot_time: SystemTime,
 
+    phyiscal_state: PhysicalVehicleState,
+
+    ///--- Data arriving directly from sensors:
+    /// GPS
     lat: Sensulator,
     lon: Sensulator,
     alt: Sensulator,
 
+    /// Gyro
     xgyro: Sensulator,
     ygyro: Sensulator,
     zgyro: Sensulator,
 
+    /// Accelerometer
     xacc: Sensulator,
     yacc: Sensulator,
     zacc: Sensulator,
 
+    /// Magnetometer
     xmag: Sensulator,
     ymag: Sensulator,
     zmag: Sensulator,
+
+    airspeed: Sensulator,
 
     wander: Sensulator,
 
 
 }
 
-//fn binary<T: Trait>(x: T, y: T) -> T
-
+//TODO use generid instead
 type VehicleConnectionRef = std::boxed::Box<dyn mavlink::MavConnection + std::marker::Send + std::marker::Sync>;
 
 
@@ -270,9 +345,6 @@ fn simulate_sensors_update(connection: &VehicleConnectionRef,
                            state: &mut VehicleState,
 ) {
     let mut sys_micros = calc_elapsed_micros(&state.boot_time);
-    // altitude needs to change in lockstep in order for sensor fusion to align
-    let common_alt: f32 = state.alt.read();
-
     for _medium_rate in 0..2 {
         for _fast_rate in 0..10 {
             // this message is required to be sent at high speed since it simulates the IMU
@@ -281,22 +353,15 @@ fn simulate_sensors_update(connection: &VehicleConnectionRef,
             sys_micros = calc_elapsed_micros(&state.boot_time);
         }
 
-        connection.send_default( &hil_gps_msg(sys_micros,
-                                        state.lat.read(),
-                                        state.lon.read(),
-                                        common_alt,
-        )).ok();
+        //px4_sitl sends an early request for this msg
+//        connection.send_default(&hil_state_quaternion_msg(sys_micros, state)).ok();
+        connection.send_default( &hil_gps_msg(sys_micros, state)).ok();
 
-//        connection.send_default(&rc_channels_msg(sys_micros,
+
+        //        connection.send_default(&rc_channels_msg(sys_micros,
 //        )).ok();
     }
 
-    //px4_sitl sends an early request for this msg
-    connection.send_default(&hil_state_quaternion_msg(sys_micros,
-                                                state.lat.read(),
-                                                state.lon.read(),
-                                                state.alt.read(),
-                                                generate_attitude_quat(&state))).ok();
 
 
 }
@@ -304,11 +369,12 @@ fn main() {
 
     let mut vehicle_state = VehicleState {
         boot_time: SystemTime::now(),
+        phyiscal_state: PhysicalVehicleState::new(),
 
-        lat: Sensulator::new(HOME_LAT, 1e-3, 1e-6),
-        lon: Sensulator::new(HOME_LON, 1e-3, 1e-6),
+        lat: Sensulator::new(HOME_LAT as f32, 1e-3, 1e-6),
+        lon: Sensulator::new(HOME_LON as f32, 1e-3, 1e-6),
         // this range appears to allow EKF fusion to begin
-        alt: Sensulator::new(HOME_ALT, 10.0, 5.0),
+        alt: Sensulator::new(HOME_ALT as f32, 10.0, 5.0),
 
         xgyro: Sensulator::new(0.001, GYRO_ABS_ERR, GYRO_REL_ERR),
         ygyro: Sensulator::new(0.001, GYRO_ABS_ERR, GYRO_REL_ERR),
@@ -321,6 +387,8 @@ fn main() {
         xmag: Sensulator::new(0.001, MAG_ABS_ERR, MAG_REL_ERR),
         ymag: Sensulator::new(0.001, MAG_ABS_ERR, MAG_REL_ERR),
         zmag: Sensulator::new(0.001, MAG_ABS_ERR, MAG_REL_ERR),
+
+        airspeed: Sensulator::new(0.001, 1e-3, 1e-6),
 
         wander: Sensulator::new(0.01, 1e-1, 1e-3),
     };
