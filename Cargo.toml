@@ -10,7 +10,8 @@ sensulator= "0.2"
 
 
 [dependencies.mavlink]
-path = "../rust-mavlink"
+git = "https://github.com/tstellanova/rust-mavlink.git"
+#path = "../rust-mavlink"
 
 [patch.crates-io]
 sensulator = { git = "https://github.com/tstellanova/sensulator.git"  }

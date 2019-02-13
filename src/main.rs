@@ -229,20 +229,6 @@ fn calc_elapsed_micros(base_time: &SystemTime) -> u64 {
 }
 
 
-//const ATOMIC_SIMULATION_USEC: Duration = Duration::from_micros(MAX_IMU_DELAY_USEC);
-
-//fn calc_elapsed_micros() -> u64 {
-//    let old_sim_clock_time = unsafe { SIM_CLOCK_TIME };
-//
-//    let sim_delta = SIM_TIME_MULTIPLIER * ATOMIC_SIMULATION_USEC;
-//    let sim_new_time = old_sim_clock_time + sim_delta;
-//    let sim_elapsed_micros =  micros_from_duration(&sim_new_time);
-//    unsafe {
-//        SIM_ELAPSED_DELTA = sim_delta;
-//        SIM_CLOCK_TIME = sim_new_time;
-//    }
-//    sim_elapsed_micros
-//}
 
 /// Some guesses as to accuracy of a fake accelerometer
 const ACCEL_ABS_ERR : f32 = 1e-2;
@@ -411,18 +397,7 @@ fn simulate_sensors_update(connection: &VehicleConnectionRef,
 
     //send multiple intermediate msgs to fill the gap
     let num_increments: u32 = 10;
-
-//    let num_increments: u32 = (micros_from_duration(&total_sim_delta)  / MAX_IMU_DELAY_USEC) as u32; //max usec between imu updates
-//    if !(num_increments > 0) {
-//        return;
-//    }
-//    let num_increments = if num_increments > 10 {
-//        println!("num_increments: {:?}", num_increments);
-//        10
-//    } else { num_increments};
-
     let incr_delta = total_sim_delta / num_increments;
-
 
     for _fast_rate in 0..num_increments {
         let intermediate_sim_time = last_sim_time + incr_delta;
@@ -439,12 +414,6 @@ fn simulate_sensors_update(connection: &VehicleConnectionRef,
             LAST_SIM_SLOW_SENSORS_UPDATE = SIM_CLOCK_TIME;
         }
     }
-
-//    unsafe {
-//        if LAST_REAL_CLOCK_TIME < SIM_CLOCK_TIME {
-//            println!("{:?}", SIM_CLOCK_TIME - LAST_REAL_CLOCK_TIME);
-//        }
-//    }
 
 }
 
