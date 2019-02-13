@@ -1,11 +1,13 @@
 /// License: See LICENSE file
 
 extern crate mavlink;
+
+
 use std::sync::Arc;
 use std::thread;
-use std::time::{SystemTime};
-
+use std::time::{Duration, SystemTime};
 use sensulator::Sensulator;
+
 
 
 const STD_PRESS: f64 = 101325.0;  // static pressure at sea level (Pa)
@@ -198,11 +200,49 @@ sqrt(0.5)	0	0	-sqrt(0.5)	-90° rotation around Z axis
 */
 
 
-fn calc_elapsed_micros(base_time: &SystemTime) -> u64 {  
-  let elapsed = base_time.elapsed().unwrap();
-  let elapsed_micros = (elapsed.as_secs() * 1000000) + (elapsed.subsec_micros() as u64);
-  elapsed_micros
+fn micros_from_duration(duration: &Duration) -> u64 {
+    (duration.as_secs() * 1000000) + (duration.subsec_micros() as u64)
 }
+
+const SIM_TIME_MULTIPLIER: u32 = 4;
+
+static mut SIM_CLOCK_TIME: Duration = Duration::from_secs(0);
+static mut LAST_REAL_CLOCK_TIME: Duration = Duration::from_secs(0);
+static mut SIM_ELAPSED_DELTA: Duration = Duration::from_secs(0);
+
+
+fn calc_elapsed_micros(base_time: &SystemTime) -> u64 {
+    let old_real_time = unsafe { LAST_REAL_CLOCK_TIME };
+    let old_sim_clock_time = unsafe { SIM_CLOCK_TIME };
+    let new_real_time = base_time.elapsed().unwrap();
+    let real_delta = new_real_time - old_real_time;
+
+    let sim_delta = SIM_TIME_MULTIPLIER * real_delta;
+    let sim_new_time = old_sim_clock_time + sim_delta;
+    let sim_elapsed_micros =  micros_from_duration(&sim_new_time);
+    unsafe {
+        LAST_REAL_CLOCK_TIME = new_real_time;
+        SIM_ELAPSED_DELTA = sim_delta;
+        SIM_CLOCK_TIME = sim_new_time;
+    }
+    sim_elapsed_micros
+}
+
+
+//const ATOMIC_SIMULATION_USEC: Duration = Duration::from_micros(MAX_IMU_DELAY_USEC);
+
+//fn calc_elapsed_micros() -> u64 {
+//    let old_sim_clock_time = unsafe { SIM_CLOCK_TIME };
+//
+//    let sim_delta = SIM_TIME_MULTIPLIER * ATOMIC_SIMULATION_USEC;
+//    let sim_new_time = old_sim_clock_time + sim_delta;
+//    let sim_elapsed_micros =  micros_from_duration(&sim_new_time);
+//    unsafe {
+//        SIM_ELAPSED_DELTA = sim_delta;
+//        SIM_CLOCK_TIME = sim_new_time;
+//    }
+//    sim_elapsed_micros
+//}
 
 /// Some guesses as to accuracy of a fake accelerometer
 const ACCEL_ABS_ERR : f32 = 1e-2;
@@ -341,30 +381,73 @@ pub struct VehicleState {
 type VehicleConnectionRef = std::boxed::Box<dyn mavlink::MavConnection + std::marker::Send + std::marker::Sync>;
 
 
+
+fn send_slow_sensors(connection: &VehicleConnectionRef,
+                     state: &mut VehicleState,
+                     simulated_time: u64 ) {
+    connection.send_default( &hil_gps_msg(simulated_time, state)).ok();
+}
+
+fn send_fast_sensors(connection: &VehicleConnectionRef,
+                     state: &mut VehicleState,
+                     simulated_time: u64 ) {
+
+    // this message is required to be sent at high speed since it simulates the IMU
+    connection.send_default( &hil_sensor_msg(simulated_time, state)).ok();
+}
+
+
+static mut LAST_SIM_SLOW_SENSORS_UPDATE: Duration = Duration::from_secs(0);
+
+const MAX_IMU_DELAY_USEC:u64 =  125;
+
 fn simulate_sensors_update(connection: &VehicleConnectionRef,
                            state: &mut VehicleState,
 ) {
-    let mut sys_micros = calc_elapsed_micros(&state.boot_time);
-    for _medium_rate in 0..2 {
-        for _fast_rate in 0..10 {
-            // this message is required to be sent at high speed since it simulates the IMU
-            connection.send_default( &hil_sensor_msg(sys_micros, state)).ok();
+    let last_sim_time = unsafe {SIM_CLOCK_TIME};
+    let total_sim_delta = unsafe { SIM_ELAPSED_DELTA};
+    let new_sim_time = calc_elapsed_micros(&state.boot_time);
+    //println!("total_sim_delta: {:?}", total_sim_delta);
 
-            sys_micros = calc_elapsed_micros(&state.boot_time);
+    //send multiple intermediate msgs to fill the gap
+    let num_increments: u32 = 10;
+
+//    let num_increments: u32 = (micros_from_duration(&total_sim_delta)  / MAX_IMU_DELAY_USEC) as u32; //max usec between imu updates
+//    if !(num_increments > 0) {
+//        return;
+//    }
+//    let num_increments = if num_increments > 10 {
+//        println!("num_increments: {:?}", num_increments);
+//        10
+//    } else { num_increments};
+
+    let incr_delta = total_sim_delta / num_increments;
+
+
+    for _fast_rate in 0..num_increments {
+        let intermediate_sim_time = last_sim_time + incr_delta;
+        let intermediate_micros = micros_from_duration(&intermediate_sim_time);
+        send_fast_sensors(connection, state, intermediate_micros);
+    }
+    send_fast_sensors(connection, state, new_sim_time);
+
+
+    let slow_check_delta = unsafe { SIM_CLOCK_TIME - LAST_SIM_SLOW_SENSORS_UPDATE};
+    if slow_check_delta.as_secs() > 0 {
+        send_slow_sensors(connection, state, new_sim_time);
+        unsafe {
+            LAST_SIM_SLOW_SENSORS_UPDATE = SIM_CLOCK_TIME;
         }
-
-        //px4_sitl sends an early request for this msg
-//        connection.send_default(&hil_state_quaternion_msg(sys_micros, state)).ok();
-        connection.send_default( &hil_gps_msg(sys_micros, state)).ok();
-
-
-        //        connection.send_default(&rc_channels_msg(sys_micros,
-//        )).ok();
     }
 
-
+//    unsafe {
+//        if LAST_REAL_CLOCK_TIME < SIM_CLOCK_TIME {
+//            println!("{:?}", SIM_CLOCK_TIME - LAST_REAL_CLOCK_TIME);
+//        }
+//    }
 
 }
+
 fn main() {
 
     let mut vehicle_state = VehicleState {
@@ -394,24 +477,20 @@ fn main() {
     };
 
 
-
+  //let selector = "tcpout:127.0.0.1:4560";
+  //let selector = "serial:/dev/cu.usbserial-DA00C97E:57600";
   let selector = "tcpout:rock64-03.local:4560";
-  let connection = Arc::new(mavlink::connect(&selector).expect("Couldn't create new vehicle connection"));
+
+  let mut mavconn = mavlink::connect(&selector).expect("Couldn't create new vehicle connection");
+  mavconn.set_protocol_version(mavlink::MavlinkVersion::V2);
+  let connection = Arc::new(mavconn);
   
   thread::spawn({
       let connection = connection.clone();
 
       move || {
           loop {
-              //std::sync::Arc<std::boxed::Box<dyn mavlink::MavConnection + std::marker::Send + std::marker::Sync>>
               simulate_sensors_update(  &*connection,  &mut vehicle_state);
-
-//              if let Ok(conn) = connection.downcast::<mavlink::MavConnection>() {
-//                  simulate_sensors_update(
-//                      &conn,
-//                  &vehicle_state,
-//                  );
-//              }
               thread::yield_now();
           }
       }
@@ -419,19 +498,34 @@ fn main() {
 
     // receiving loop continues in this thread
     loop {
-      if let Ok((_header,msg)) = connection.recv() {
-        match msg.message_id() {
-          //TODO use constants instead
-          93 => continue, //HIL_ACTUATOR_CONTROLS
-          _ => println!("{:?}", msg)
+        match connection.recv() {
+            Ok((_header, msg)) => {
+                match msg.message_id() {
+                  //TODO use constants instead
+                  93 => continue, //HIL_ACTUATOR_CONTROLS
+                  _ => println!("{:?}", msg)
+                }
+            },
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => {
+                     //no more data coming
+                    println!("UnexpectedEof: {:?}", e);
+                    break;
+                },
+                std::io::ErrorKind::WouldBlock => {
+                    //wait until something is available
+                    //println!("WouldBlock: {:?}", e);
+                },
+                _ => {
+                    println!("Err: {:?}", e);
+                }
+            },
         }
-      } 
-      else {
-        println!("bogus msg");
-          continue;
-      }
-      thread::yield_now();
+        thread::yield_now();
     }
+
+
+
 }
 
 
