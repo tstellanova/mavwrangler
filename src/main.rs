@@ -399,8 +399,8 @@ fn simulate_sensors_update(connection: &VehicleConnectionRef,
     let num_increments: u32 = 10;
     let incr_delta = total_sim_delta / num_increments;
 
-    for _fast_rate in 0..num_increments {
-        let intermediate_sim_time = last_sim_time + incr_delta;
+    for i in 0..num_increments {
+        let intermediate_sim_time = last_sim_time + (i*incr_delta);
         let intermediate_micros = micros_from_duration(&intermediate_sim_time);
         send_fast_sensors(connection, state, intermediate_micros);
     }
@@ -448,7 +448,7 @@ fn main() {
 
   //let selector = "tcpout:127.0.0.1:4560";
   //let selector = "serial:/dev/cu.usbserial-DA00C97E:57600";
-  let selector = "tcpout:rock64-03.local:4560";
+  let selector = "tcpout:127.0.0.1:4560";
 
   let mut mavconn = mavlink::connect(&selector).expect("Couldn't create new vehicle connection");
   mavconn.set_protocol_version(mavlink::MavlinkVersion::V2);
