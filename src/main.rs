@@ -211,7 +211,7 @@ static mut LAST_REAL_CLOCK_TIME: Duration = Duration::from_secs(0);
 static mut SIM_ELAPSED_DELTA: Duration = Duration::from_secs(0);
 
 
-fn calc_elapsed_micros(base_time: &SystemTime) -> u64 {
+fn update_elapsed_micros(base_time: &SystemTime) -> u64 {
     let old_real_time = unsafe { LAST_REAL_CLOCK_TIME };
     let old_sim_clock_time = unsafe { SIM_CLOCK_TIME };
     let new_real_time = base_time.elapsed().unwrap();
@@ -245,7 +245,7 @@ type Meters = f32;
 type MetersPerSecond = f32;
 type MetersPerSecondPerSecond = f32;
 type RadiansPerSecond = f32;
-type RadiansPerSecondPerSecond = f32;
+//type RadiansPerSecondPerSecond = f32;
 
 type WGS84Degrees = f64;
 
@@ -258,9 +258,9 @@ const HOME_ALT: Meters = 500.0;
 
 pub struct PhysicalVehicleState {
     /// --- Position -----
-    local_x: Meters,
-    local_y: Meters,
-    local_z: Meters,
+//    local_x: Meters,
+//    local_y: Meters,
+//    local_z: Meters,
 
     global_lat: WGS84Degrees,
     global_lon: WGS84Degrees,
@@ -286,18 +286,18 @@ pub struct PhysicalVehicleState {
     /// Yaw angular speed in rad/s
     yawspeed: RadiansPerSecond,
 
-    roll_accel: RadiansPerSecondPerSecond,
-    pitch_accel: RadiansPerSecondPerSecond,
-    yaw_accel: RadiansPerSecondPerSecond,
+//    roll_accel: RadiansPerSecondPerSecond,
+//    pitch_accel: RadiansPerSecondPerSecond,
+//    yaw_accel: RadiansPerSecondPerSecond,
 
 }
 
 impl PhysicalVehicleState{
     fn new() -> PhysicalVehicleState {
         PhysicalVehicleState {
-            local_x: 0.0,
-            local_y: 0.0,
-            local_z: 0.0,
+//            local_x: 0.0,
+//            local_y: 0.0,
+//            local_z: 0.0,
 
             global_lat: HOME_LAT,
             global_lon: HOME_LON,
@@ -322,10 +322,10 @@ impl PhysicalVehicleState{
             pitchspeed: 0.0,
             /// Yaw angular speed in rad/s
             yawspeed: 0.0,
-
-            roll_accel: 0.0,
-            pitch_accel: 0.0,
-            yaw_accel: 0.0,
+//
+//            roll_accel: 0.0,
+//            pitch_accel: 0.0,
+//            yaw_accel: 0.0,
         }
     }
 }
@@ -385,26 +385,33 @@ fn send_fast_sensors(connection: &VehicleConnectionRef,
 
 static mut LAST_SIM_SLOW_SENSORS_UPDATE: Duration = Duration::from_secs(0);
 
-const MAX_IMU_DELAY_USEC:u64 =  125;
+//const MAX_IMU_DELAY_USEC:u64 =  125;
 
 fn simulate_sensors_update(connection: &VehicleConnectionRef,
                            state: &mut VehicleState,
 ) {
     let last_sim_time = unsafe {SIM_CLOCK_TIME};
+    let new_sim_time = update_elapsed_micros(&state.boot_time);
     let total_sim_delta = unsafe { SIM_ELAPSED_DELTA};
-    let new_sim_time = calc_elapsed_micros(&state.boot_time);
+
     //println!("total_sim_delta: {:?}", total_sim_delta);
+    let next_milestone = Duration::from_micros(new_sim_time);
 
     //send multiple intermediate msgs to fill the gap
     let num_increments: u32 = 10;
     let incr_delta = total_sim_delta / num_increments;
 
-    for i in 0..num_increments {
-        let intermediate_sim_time = last_sim_time + (i*incr_delta);
+    let mut intermediate_sim_time = last_sim_time;
+
+    for _i in 0..num_increments {
+        intermediate_sim_time += incr_delta;
         let intermediate_micros = micros_from_duration(&intermediate_sim_time);
         send_fast_sensors(connection, state, intermediate_micros);
     }
-    send_fast_sensors(connection, state, new_sim_time);
+
+    if intermediate_sim_time < next_milestone {
+        send_fast_sensors(connection, state, new_sim_time);
+    }
 
 
     let slow_check_delta = unsafe { SIM_CLOCK_TIME - LAST_SIM_SLOW_SENSORS_UPDATE};
@@ -414,6 +421,8 @@ fn simulate_sensors_update(connection: &VehicleConnectionRef,
             LAST_SIM_SLOW_SENSORS_UPDATE = SIM_CLOCK_TIME;
         }
     }
+
+
 
 }
 
